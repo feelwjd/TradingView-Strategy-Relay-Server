@@ -13,7 +13,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: phemex-relay:1.4.0   # 👈 여기서 이미지 이름/태그 지정!
+    image: phemex-relay-test:1.4.0   # 👈 여기서 이미지 이름/태그 지정!
     env_file:
       - .env
     expose:

@@ -219,43 +219,53 @@ def tv_webhook(payload: TVPayload, request: Request):
 
     looks_exit = (mp == "flat") or ("EXIT" in id_hint) or ((prev_mp == "long" and side == "sell") or (prev_mp == "short" and side == "buy"))
     if looks_exit:
-        amt_for_exit = cur_qty
-        if not (amt_for_exit and amt_for_exit > 0):
+        mi = market_info(ex, sym, cfg.symbol_fallback)
+        # 현재 포지션
+        amt_cur = float(cur_qty or 0.0)
+        if amt_cur <= 0:
             logf(logger, cfg.log_json, "exit_no_position", symbol=sym, side=cur_side, qty=cur_qty)
             return {"status": "no_position_to_exit", "symbol": sym, "side": cur_side, "qty": cur_qty}
-        mi = market_info(ex, sym, cfg.symbol_fallback)
+
+        # 🔹 부분청산 파라미터 해석: qtyPct(%) 또는 amount(절대수량)
+        comm = parse_comment_field(data.get("comment"))
+        pct  = _pick_num(data.get("qtyPct"), (comm or {}).get("qtyPct"), data.get("percent"))
+        amt  = _pick_num(data.get("amount"), data.get("qty"), data.get("contracts"), (comm or {}).get("amount"))
+
+        if pct is not None:
+            pct = max(1.0, min(100.0, float(pct)))
+            amt_for_exit = amt_cur * (pct / 100.0)
+        elif amt is not None:
+            amt_for_exit = min(amt_cur, float(amt))
+        else:
+            # 기본: 전량
+            amt_for_exit = amt_cur
+
+        # 거래소 스텝 라운딩
         amt_for_exit = round_step(amt_for_exit, mi["amount_step"])
-        side_exec = "sell" if cur_side == "long" else ("buy" if cur_side == "short" else side or "sell")
-        order = create_market_order(
-            ex, sym, side, amt,
-            reduce_only=ro,
-            limit_px=limit_px,
-            cfg=cfg             # ← 이제 정상 동작
-        )
+        if amt_for_exit <= 0:
+            logf(logger, cfg.log_json, "exit_amount_too_small", symbol=sym, cur_qty=cur_qty, computed=amt_for_exit)
+            return {"status": "no_position_to_exit", "symbol": sym, "side": cur_side, "qty": cur_qty}
+
+        # 방향 결정 (롱 청산=SELL, 숏 청산=BUY)
+        side_exec = "sell" if cur_side == "long" else "buy"
+
+        logf(logger, cfg.log_json, "exit_reduce_only",
+            id=tv_id, symbol=sym, cur_side=cur_side, cur_qty=cur_qty,
+            exec_side=side_exec, amount=amt_for_exit, mode="partial" if amt_for_exit < amt_cur else "full")
+
+        order = create_market_order(ex, sym, side_exec, amt_for_exit, reduce_only=True)
         order_id = order.get("id")
         result["order"] = order
+
         if order_id:
             last = poll_order_completion(ex, sym, order_id, cfg.recon_retries, cfg.recon_wait)
             result["order_final"] = last
-            exit_px = float((last or {}).get("average") or (last or {}).get("price") or 0.0) or get_last_or_mark(ex, sym, cfg.use_mark_price)
-            # realized pnl approx
-            snap = app.state.r.get(f"pos:{strategy_name}")
-            pnl = None
-            if snap:
-                try:
-                    import json as _json
-                    rec = _json.loads(snap)
-                    pnl = realized_pnl_simple(rec.get("side"), float(rec.get("entry") or 0.0), exit_px, float(rec.get("amount") or 0.0), cfg.taker_fee)
-                except Exception:
-                    pnl = None
-                app.state.r.delete(f"pos:{strategy_name}")
-            if pnl is not None:
-                cur, peak, dd = after_exit_update(app.state.r, cfg, strategy_name, pnl)
-                result["realized_pnl"] = pnl
-                result["day_pnl"] = cur; result["day_peak"] = peak; result["day_dd"] = dd
-        pos = fetch_positions(ex, sym)
-        result["final_position"] = {"side": pos.get("side"), "qty": pos.get("contracts"), "entry": pos.get("entryPrice")}
-        logf(logger, cfg.log_json, "webhook_processed_exit", id=tv_id, final_position=result["final_position"])
+
+            # 포지션 스냅샷 갱신/정리
+            pos = fetch_positions(ex, sym)
+            result["final_position"] = {"side": pos.get("side"), "qty": pos.get("contracts"), "entry": pos.get("entryPrice")}
+            logf(logger, cfg.log_json, "webhook_processed_exit", id=tv_id, final_position=result["final_position"])
+
         return json_sanitize(result)
 
     # ENTRY/DELTA or TARGET flow
