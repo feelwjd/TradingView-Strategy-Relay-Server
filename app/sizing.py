@@ -48,6 +48,6 @@ def compute_amount_server(cfg: Config, ex, sym: str, side: str, entry: float, co
     amt = round_step(amt, mi["amount_step"])
     if mi["min_qty"] and amt < mi["min_qty"]:
         raise HTTPException(400, f"amount below min_qty: {amt} < {mi['min_qty']}")
-    if amt <= 0:
-        raise HTTPException(400, "computed amount <= 0")
+    # if amt <= 0:
+    #     raise HTTPException(400, "computed amount <= 0")
     return amt

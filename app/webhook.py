@@ -1,5 +1,7 @@
 import json, math
 from typing import Dict, Any, Optional
+from app.balance import fetch_equity_generic
+from app.jsonsafe import jnum
 from app.parsers import parse_comment_field
 from fastapi import APIRouter, Request, HTTPException
 from .models import TVPayload
@@ -30,6 +32,33 @@ def json_sanitize(obj):
                 return [clean(v) for v in x]
             return x
         return clean(obj)
+
+def _pick_num(*vals):
+    for v in vals:
+        if v is None: 
+            continue
+        try:
+            f = float(v)
+            if math.isfinite(f):
+                return f
+        except Exception:
+            pass
+    return None
+
+def _derive_tp_from_atr(side: str, entry: float, comm: dict, atr_mult: float|None):
+    # comment 에 atr가 있고, 추정 멀티플이 설정되었을 때만
+    try:
+        atr = float(comm.get("atr"))
+    except Exception:
+        return None
+    if not atr or atr <= 0 or not atr_mult or atr_mult <= 0:
+        return None
+    if side == "buy":
+        return entry + atr * atr_mult
+    elif side == "sell":
+        return entry - atr * atr_mult
+    return None
+
 
 def symbol_from_payload(cfg: Config, payload: Dict[str,Any]) -> str:
     tv_sym = payload.get("symbol") or payload.get("ticker")
@@ -69,6 +98,9 @@ def status(request: Request):
         pos = fetch_positions(ex, sym)
     except Exception:
         pos = {}
+        
+    equity_getter = fetch_equity_generic(ex, cfg)
+    equity_amt = equity_getter()
     regime, meta = get_regime(cfg, app.state.ex, ex_regime, cfg.symbol_fallback, "BTC/USDT:USDT")
     resp = {
         "trade": {"exchange": "phemex", "testnet": cfg.trade_testnet, "symbol": sym},
@@ -81,6 +113,11 @@ def status(request: Request):
         },
         "regime": regime,
         "regime_meta": meta,
+        "equity": {
+            "code": cfg.equity_code,        # 예: 'USDT'
+            "source": cfg.equity_source,    # 예: 'free','total'...
+            "amount": jnum(equity_amt)
+        }
     }
     return json_sanitize(resp)
 
@@ -189,7 +226,12 @@ def tv_webhook(payload: TVPayload, request: Request):
         mi = market_info(ex, sym, cfg.symbol_fallback)
         amt_for_exit = round_step(amt_for_exit, mi["amount_step"])
         side_exec = "sell" if cur_side == "long" else ("buy" if cur_side == "short" else side or "sell")
-        order = create_market_order(ex, sym, side_exec, amt_for_exit, reduce_only=True)
+        order = create_market_order(
+            ex, sym, side, amt,
+            reduce_only=ro,
+            limit_px=limit_px,
+            cfg=cfg             # ← 이제 정상 동작
+        )
         order_id = order.get("id")
         result["order"] = order
         if order_id:
@@ -234,17 +276,66 @@ def tv_webhook(payload: TVPayload, request: Request):
                 if amt <= 0:
                     raise HTTPException(400, "amount too small after buffer/rounding")
 
-            entry_px = float(data.get("price") or get_last_or_mark(ex, sym, cfg.use_mark_price))
-            tp_px    = float(comm.get("tp") or 0.0) if isinstance(comm, dict) else 0.0
             fr       = fetch_phemex_funding_rate(ex, sym)
-            edge     = expected_edge_usdt(cfg, side, entry_px, tp_px if tp_px>0 else None, amt, int(data.get("leverage") or lev_by_regime), fr)
-            if edge <= 0:
-                app.state.r.delete(f"idemp:{tv_id}")
-                logf(logger, cfg.log_json, "blocked_by_edge", id=tv_id, edge=edge, entry=entry_px, tp=tp_px, amount=amt, fr=fr)
-                return {"status":"blocked_by_edge","edge":edge,"entry":entry_px,"tp":tp_px,"amount":amt,"fr":fr}
+            # ---- ENTRY/SL/TP 픽 (없으면 보정) ----
+            entry_px = _pick_num(data.get("entry"), (comm or {}).get("entry"), data.get("price"))
+            if entry_px is None:
+                entry_px = get_last_or_mark(ex, sym, cfg.use_mark_price)
+
+            sl_px    = _pick_num(data.get("sl"),    (comm or {}).get("sl"))
+            tp_px    = _pick_num(data.get("tp"),    (comm or {}).get("tp"))
+
+            # ---- TP 정책 (env/Config로 제어) ----
+            edge_require_tp   = bool(getattr(cfg, "edge_require_tp", False))
+            edge_allow_derive = bool(getattr(cfg, "edge_allow_derive_tp", True))
+            edge_atr_tp_x     = float(getattr(cfg, "edge_atr_tp_x", 0.0))
+
+            # TP 인자 확정: 직접 제공 > ATR로 추정(허용 시) > None
+            tp_arg = None
+            if tp_px is not None and tp_px > 0:
+                tp_arg = tp_px
+            elif edge_allow_derive:
+                tp_arg = _derive_tp_from_atr(side, float(entry_px), comm, edge_atr_tp_x)
+
+            # --- edge 계산/게이트 ---
+            EDGE_FILTER   = bool(getattr(cfg, "edge_filter_enabled", False))
+            MIN_EDGE_USDT = float(getattr(cfg, "min_edge_usdt", 0.0))
+
+            if EDGE_FILTER:
+                if tp_arg is None:
+                    if edge_require_tp:
+                        app.state.r.delete(f"idemp:{tv_id}")
+                        logf(logger, cfg.log_json, "blocked_by_edge",
+                             id=tv_id, reason="no_tp", entry=entry_px, amount=amt)
+                        return {"status":"blocked_by_edge","reason":"no_tp",
+                                "entry":entry_px,"amount":amt}
+                    else:
+                        # TP 없이 스킵 허용 (로그만 남김)
+                        logf(logger, cfg.log_json, "edge_skip_no_tp",
+                             id=tv_id, entry=entry_px, amount=amt)
+                else:
+                    edge = expected_edge_usdt(
+                        cfg, side, float(entry_px), float(tp_arg), amt,
+                        int(data.get("leverage") or lev_by_regime), fr
+                    )
+                    if edge is None or edge <= MIN_EDGE_USDT:
+                        app.state.r.delete(f"idemp:{tv_id}")
+                        logf(logger, cfg.log_json, "blocked_by_edge",
+                             id=tv_id, edge=edge, entry=entry_px, tp=tp_arg, amount=amt, fr=fr)
+                        return {"status":"blocked_by_edge","edge":edge,
+                                "entry":entry_px,"tp":tp_arg,"amount":amt,"fr":fr}
+
+            # ✅ 중복 edge 계산 줄을 반드시 제거하세요.
+            # edge = expected_edge_usdt(cfg, side, entry_px, tp_px if tp_px>0 else None, amt, int(data.get("leverage") or lev_by_regime), fr)
 
             ro = bool(data.get("reduceOnly", False))
-            order = create_market_order(ex, sym, side, amt, reduce_only=ro, limit_px=limit_px)
+            ps_hint = "long" if side == "buy" else "short"
+            order = create_market_order(
+                ex, sym, side, amt,
+                reduce_only=ro,
+                limit_px=limit_px,
+                cfg=cfg             # ← 이제 정상 동작
+            )
             order_id = order.get("id")
             result["order"] = order
             if order_id:
