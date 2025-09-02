@@ -246,4 +246,4 @@ A. 기본은 시장가입니다. `orderType:"limit"`(또는 `type:"limit"`)과 `
 
 ## 📝 라이선스
 
-MIT (또는 원하는 라이선스).
+MIT

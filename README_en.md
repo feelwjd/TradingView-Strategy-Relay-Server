@@ -246,4 +246,4 @@ A. Default is market. Add `orderType:"limit"` (or `type:"limit"`) plus `price` t
 
 ## 📝 License
 
-MIT (or your preferred license).
+MIT
