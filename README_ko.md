@@ -245,7 +245,7 @@ TradingView 알림에서 **Webhook URL**을 활성화하고, 릴레이 엔드포
 - **알림:** Entry/TP1 JSON을 `alert()`로 웹훅 전송
 
 ---
-![strategy](https://github.com/user-attachments/assets/6bf611c1-fa9f-4e15-af8f-29cd6b82d4be)
+![strategy](https://github.com/user-attachments/assets/32ff6646-5fd2-47ec-8b18-1c89aa9d63f6)
 ## 전체 Pine 스크립트
 
 > 파일로도 제공: [`pine/BULL_ETH_Donchian_ATR_v4.pine`](./pine/BULL_ETH_Donchian_ATR_v4.pine)
