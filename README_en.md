@@ -272,6 +272,11 @@ curl -sS -X POST http://localhost:80/webhook \
 
 ---
 ![strategy](https://github.com/user-attachments/assets/32ff6646-5fd2-47ec-8b18-1c89aa9d63f6)
+![Profitable trades](https://github.com/user-attachments/assets/d70deaab-643d-4ab1-84d0-2359b135cc6d)
+
+1 Based on ETH
+- Total P&L: +2.39% x Reversal (5x based on relay servers) = +11.95%
+- Profitability transaction: 67.05%
 ## Full Pine script
 
 > Also shipped as a file: [`pine/BULL_ETH_Donchian_ATR_v4.pine`](./pine/BULL_ETH_Donchian_ATR_v4.pine)

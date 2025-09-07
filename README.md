@@ -246,6 +246,11 @@ TradingView 알림에서 **Webhook URL**을 활성화하고, 릴레이 엔드포
 
 ---
 ![strategy](https://github.com/user-attachments/assets/32ff6646-5fd2-47ec-8b18-1c89aa9d63f6)
+![Profitable trades](https://github.com/user-attachments/assets/d70deaab-643d-4ab1-84d0-2359b135cc6d)
+
+1 ETH 기준
+- Total P&L   : +2.39% x Reverage (relay 서버는 기본으로 5배) = +11.95%
+- 수익성 거래   : 67.05%
 ## 전체 Pine 스크립트
 
 > 파일로도 제공: [`pine/BULL_ETH_Donchian_ATR_v4.pine`](./pine/BULL_ETH_Donchian_ATR_v4.pine)
